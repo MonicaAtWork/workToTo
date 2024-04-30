@@ -1,0 +1,49 @@
+package com.sherwinwilliams.service.paymentorchestrationserice.exception;
+
+import com.sherwinwilliams.service.paymentorchestrationserice.enm.ErrorSource;
+import lombok.Data;
+import lombok.Getter;
+import org.springframework.http.HttpStatus;
+
+@Data
+@Getter
+public class PaymentOrchestrationException extends RuntimeException {
+
+    private HttpStatus statusCode;
+    private String errorDescription;
+    private ErrorSource source;
+
+    public PaymentOrchestrationException(HttpStatus statusCode, String message) {
+        super(message);
+        this.statusCode = statusCode;
+    }
+
+    public PaymentOrchestrationException(HttpStatus statusCode, String message, Exception exception) {
+        super(message, exception);
+        this.statusCode = statusCode;
+    }
+
+    public PaymentOrchestrationException(HttpStatus statusCode, Exception exception) {
+        super(exception);
+        this.statusCode = statusCode;
+    }
+
+    /**
+     *  Parameterised Constructor.
+     *
+     * @param statusCode HttpStatus
+     * @param message String
+     * @param errorDescription String
+     * @param source Error Source
+     * @param exception Exception
+     */
+    public PaymentOrchestrationException(HttpStatus statusCode, String message,
+                                         String errorDescription, ErrorSource source, Exception exception) {
+        super(message, exception);
+        this.statusCode = statusCode;
+        this.errorDescription = errorDescription;
+        this.source = source;
+    }
+
+
+}
