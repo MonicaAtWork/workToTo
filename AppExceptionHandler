@@ -1,0 +1,259 @@
+package com.sherwinwilliams.service.paymentorchestrationserice.exception.handler;
+
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.exc.InvalidFormatException;
+import com.sherwinwilliams.service.paymentorchestrationserice.exception.MessageException;
+import com.sherwinwilliams.service.paymentorchestrationserice.exception.PolError;
+import com.sherwinwilliams.service.paymentorchestrationserice.exception.PaymentOrchestrationException;
+import com.sherwinwilliams.service.paymentorchestrationserice.enm.ErrorSource;
+
+import java.time.LocalDateTime;
+
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.BindingResult;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+import org.springframework.web.util.HtmlUtils;
+
+import jakarta.validation.ConstraintViolationException;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+@RestControllerAdvice
+public class AppExceptionHandler extends ResponseEntityExceptionHandler {
+
+    // GENERAL ERROR MESSAGES
+    public static final String INVALID_REQUEST = "Invalid Request";
+    public static final String MISSING_PARAMETER = "Missing parameter: ";
+    public static final String INVALID_PARAMETER = "Invalid parameter: ";
+    public static final String ARGUMENT_TYPE_MISMATCH = "Argument type mismatch error";
+    public static final String UNKNOWN_EXCEPTION = "Unknown exception occurred";
+
+    /**
+     * Exception handler method to handle the {@link MessageException}.
+     *
+     * @param exception {@link MessageException}
+     * @return ResponseEntity
+     */
+    @ExceptionHandler(MessageException.class)
+    public ResponseEntity<Object> handleException(MessageException exception) {
+        Map<String, Object> map = ExceptionBuilder.buildError(INVALID_REQUEST,
+                HttpStatus.BAD_REQUEST, MessageException.MESSAGE_EXISTS);
+        return new ResponseEntity<>(Collections.singletonList(map), HttpStatus.BAD_REQUEST);
+    }
+
+    // GENERAL ERROR HANDLERS
+
+    /**
+     * Exception handler method to handle the {@link InvalidFormatException}.
+     *
+     * @param exception {@link InvalidFormatException}
+     * @return ResponseEntity
+     */
+    @ExceptionHandler(InvalidFormatException.class)
+    public ResponseEntity<Object> handleException(InvalidFormatException exception) {
+        Map<String, Object> map = ExceptionBuilder.buildError(INVALID_REQUEST, HttpStatus.BAD_REQUEST,
+                exception.getLocalizedMessage());
+        return new ResponseEntity<>(Collections.singletonList(map), HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Exception handler method to handle the {@link IllegalArgumentException}.
+     *
+     * @param exception {@link IllegalArgumentException}
+     * @return ResponseEntity
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Object> handleException(IllegalArgumentException exception) {
+        Map<String, Object> map = ExceptionBuilder.buildError(INVALID_REQUEST, HttpStatus.BAD_REQUEST,
+                exception.getLocalizedMessage());
+        return new ResponseEntity<>(Collections.singletonList(map), HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Exception handler method to handle the {@link ConstraintViolationException}.
+     *
+     * @param exception {@link ConstraintViolationException}
+     * @return ResponseEntity
+     */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<Object> handleException(ConstraintViolationException exception) {
+        List<String> errors = new ArrayList<>();
+        exception.getConstraintViolations().forEach(violation -> {
+            errors.add(violation.getMessageTemplate());
+        });
+
+        Map<String, Object> map = ExceptionBuilder.buildError(INVALID_REQUEST, HttpStatus.BAD_REQUEST, errors);
+        return new ResponseEntity<>(map, HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Handles the {@link MethodArgumentTypeMismatchException} for bad query string parameters.
+     *
+     * @param exception {@link MethodArgumentTypeMismatchException}
+     * @return ResponseEntity
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Object> handleException(MethodArgumentTypeMismatchException exception) {
+        String message = ExceptionBuilder.argumentTypeMismatchMessage(exception);
+        Map<String, Object> map = ExceptionBuilder.buildError(ARGUMENT_TYPE_MISMATCH, HttpStatus.BAD_REQUEST, message);
+        return new ResponseEntity<>(Collections.singletonList(map), HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * This method handles any generic runtime exception which is not handled. Extracts necessary
+     * details from exception object and returns readable response to the consuming application.
+     *
+     * @param exception ex param
+     * @param request request param
+     * @return ResponseEntity
+     */
+    @ExceptionHandler(Exception.class)
+    public final ResponseEntity<Object> handleException(Throwable exception, WebRequest request) {
+        PolError error = PolError.builder()
+            .timestamp(LocalDateTime.now())
+            .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+            .message(exception.getMessage())
+            .build();
+
+        return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+    // ERROR HANDLER OVERRIDES
+
+    /**
+     * Exception handler method to handle a {@link MethodArgumentNotValidException}.
+     *
+     * @param exception {@link MethodArgumentNotValidException}
+     * @return ResponseEntity
+     */
+
+    @Override
+    protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException exception,
+        HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+
+        List<String> errors = new ArrayList<>();
+        BindingResult result = exception.getBindingResult();
+        List<FieldError> fieldErrors = result.getFieldErrors();
+
+        for (FieldError fieldError : fieldErrors) {
+            errors.add("Validation failed for the field: " + fieldError.getField()
+                + " Error category: " + fieldError.getCode() + " Message: " + fieldError.getDefaultMessage());
+        }
+        Map<String, Object> map = ExceptionBuilder.buildError(INVALID_REQUEST, HttpStatus.BAD_REQUEST, errors);
+        return new ResponseEntity<>(map, HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Exception handler method to handle a {@link HttpMessageNotReadableException}.
+     *
+     * @param exp {@link HttpMessageNotReadableException}
+     * @return ResponseEntity
+     */
+    @Override
+    protected ResponseEntity<Object> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException exp, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        ProblemDetail body = this.createProblemDetail(
+                exp, status, exp.getMessage(), (String)null, (Object[])null, request);
+        return this.handleExceptionInternal(exp, body, headers, status, request);
+    }
+
+
+    /**
+     * This method handles the invalid if the request is in invalid JSON format.
+     *
+     * @param exception exception param
+     * @param headers headers param
+     * @param status status param
+     * @param request request param
+     * @return ResponseEntity
+     */
+    public ResponseEntity<Object> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException exception,
+            HttpHeaders headers,
+            HttpStatus status, WebRequest request) {
+        if (exception.getCause() instanceof InvalidFormatException) {
+            InvalidFormatException invalidFormatException = (InvalidFormatException) exception.getCause();
+            List<String> errors = new ArrayList<>();
+            List<JsonMappingException.Reference> fieldErrors = invalidFormatException.getPath();
+
+            for (JsonMappingException.Reference fieldError : fieldErrors) {
+                errors.add(INVALID_PARAMETER + fieldError.getFieldName());
+            }
+
+            Map<String, Object> map = ExceptionBuilder.buildError(INVALID_REQUEST, HttpStatus.BAD_REQUEST, errors);
+            return new ResponseEntity<>(map, HttpStatus.BAD_REQUEST);
+        } else {
+            Exception exceptionInstance = exception;
+            if (exception.getMessage() != null) {
+                exceptionInstance = new Exception(HtmlUtils.htmlEscape(exception.getMessage()));
+            }
+            return this.handleExceptionInternal(exceptionInstance, null, headers, status, request);
+        }
+    }
+
+    protected ResponseEntity<Object> handleExceptionInternal(Exception exception, Object body, HttpHeaders headers,
+                                                             HttpStatus status, WebRequest request) {
+        String exceptionMessage = exception.getMessage() != null ? exception.getMessage() : UNKNOWN_EXCEPTION;
+        Map<String, Object> map = ExceptionBuilder.buildError(exceptionMessage, status, exceptionMessage);
+        return new ResponseEntity<>(Collections.singletonList(map), status);
+    }
+
+    /**
+     * This method handles PaymentOrchestrationException.
+     *
+     * @param exception exception param
+     * @param request request param
+     * @return ResponseEntity
+     */
+    @ExceptionHandler(PaymentOrchestrationException.class)
+    public final ResponseEntity<Object> handlePaymentOrchestrationException(
+            PaymentOrchestrationException exception,
+            WebRequest request) {
+        PolError error = PolError.builder()
+                .timestamp(LocalDateTime.now())
+                .status(exception.getStatusCode().value())
+                .message(exception.getMessage())
+                .source(exception.getSource())
+                .build();
+
+        return new ResponseEntity<>(error, exception.getStatusCode());
+    }
+
+    /**
+     * This method handles Spring's builtin exception, MissingServletRequestParameterException which
+     * is thrown when mandatory or type validations fail on Request/Path parameters. Provides readable
+     * information back to consuming applications.
+     *
+     * @param exception ex param
+     * @param headers param
+     * @param status status param
+     * @param request request param
+     * @return ResponseEntity
+     */
+    //@Override
+    protected ResponseEntity<Object> handleMissingServletRequestParameter(
+            MissingServletRequestParameterException exception, HttpHeaders headers, HttpStatus status,
+            WebRequest request) {
+        PolError error = PolError.builder()
+                .timestamp(LocalDateTime.now())
+                .status(status.value())
+                .message(exception.getMessage())
+                .source(ErrorSource.POL)
+                .build();
+        return new ResponseEntity(error, HttpStatus.BAD_REQUEST);
+    }
+}
