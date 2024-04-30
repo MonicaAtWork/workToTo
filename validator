@@ -1,0 +1,318 @@
+package com.sherwinwilliams.service.paymentorchestrationserice.validator;
+
+
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.ErrorDetailDto;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.NotificationRequestItem;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.RefundAmountRequested;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.ResponseCodesEnum;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.StatusCodesEnum;
+import com.sherwinwilliams.service.paymentorchestrationserice.dao.PaymentOrchestrationDao;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.entity.PaymentAuthorization;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.entity.PaymentCancel;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.entity.PaymentCapture;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.entity.PaymentRefund;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentAuthorizationRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentCancelRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentCaptureRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.enm.ErrorSource;
+import com.sherwinwilliams.service.paymentorchestrationserice.enm.EventCode;
+import com.sherwinwilliams.service.paymentorchestrationserice.exception.PaymentOrchestrationException;
+import com.sherwinwilliams.service.paymentorchestrationserice.util.Constants;
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+
+import java.math.BigInteger;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
+
+@Component
+public class PaymentOrchestrationModifyValidator {
+
+    @Autowired
+    PaymentCancelRepository paymentCancelRepository;
+
+    @Autowired
+    PaymentOrchestrationDao paymentOrchestrationDao;
+
+    @Autowired
+    PaymentAuthorizationRepository paymentAuthorizationRepository;
+
+    @Autowired
+    PaymentCaptureRepository paymentCaptureRepository;
+
+    /**
+     * This method is used to validate refund amount requested to all previous refund entries .
+     *
+     * @param paymentRefundResponse list.
+     * @param paymentCaptureResponse PaymentCapture.
+     * @return boolean.
+     */
+    public boolean validateRefundAmountRequestedWithPreviousRefundRequest(List<PaymentRefund> paymentRefundResponse,
+                                                                          PaymentCapture paymentCaptureResponse) {
+        BigInteger totalRefundedAmountRequested = BigInteger.ZERO;
+        // Iterate through the paymentRefundResponse list and sum the amounts
+        for (PaymentRefund refund : paymentRefundResponse) {
+            BigInteger refundedAmount = refund.getRefundAmountRequested();
+            totalRefundedAmountRequested = totalRefundedAmountRequested.add(refundedAmount);
+        }
+        BigInteger captureAmountApproved = paymentCaptureResponse.getCaptureAmountApproved();
+        // Compare the captureAmountApproved with the total refundedAmount request
+        return captureAmountApproved.compareTo(totalRefundedAmountRequested) < 0;
+    }
+
+    /**
+     * This method is used to find the eligible refund request.
+     *
+     * @param authorizationRecord PaymentAuthorization.
+     * @param paymentCaptureRecord PaymentCapture.
+     * @param paymentRefundResponse PaymentRefund.
+     * @param refundRequest RefundAmountRequested.
+     * @return boolean.
+     */
+    public boolean isRequestRefundEligible(PaymentAuthorization authorizationRecord,
+                                           PaymentCapture paymentCaptureRecord,
+                                           List<PaymentRefund> paymentRefundResponse,
+                                           RefundAmountRequested refundRequest) {
+        //Auth check
+        PaymentOrchestrationException exp;
+        //StatusCodesEnum updatedVoidStatus = null;
+        if (Objects.isNull(authorizationRecord)) {
+            String errorDescription = "Invalid Authorization ID Not Found in Database";
+            exp = new PaymentOrchestrationException(HttpStatus.NOT_FOUND,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(Constants.REFUND_RESPONSE_RECEIVED)
+                    .serviceName(Constants.REFUND_API_CALL)
+                    .errorMessage(errorDescription)
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.NOT_FOUND.value())
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            throw exp;
+        }
+        if (authorizationRecord.getAuthStatus().equalsIgnoreCase(StatusCodesEnum.PN.name())) {
+            String errorDescription = "Authorization is still Pending. Refund Request will be picked up in next run.";
+            exp = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(Constants.REFUND_RESPONSE_RECEIVED)
+                    .serviceName(Constants.REFUND_API_CALL)
+                    .errorMessage(errorDescription)
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.BAD_REQUEST.value())
+                    .polAuthId(authorizationRecord.getPolAuthId())
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            throw exp;
+        }
+        if (authorizationRecord.getAuthResponse() != null
+                && (authorizationRecord.getAuthResponse().equalsIgnoreCase(ResponseCodesEnum.DL.name())
+                || authorizationRecord.getAuthResponse().equalsIgnoreCase(ResponseCodesEnum.ER.name()))) {
+            String errorDescription = "Authorization ID received from API is Declined/Error";
+            //updatedVoidStatus = StatusCodesEnum.UP;
+            exp = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(Constants.REFUND_RESPONSE_RECEIVED)
+                    .serviceName(Constants.REFUND_API_CALL)
+                    .errorMessage(errorDescription)
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.BAD_REQUEST.value())
+                    .polAuthId(authorizationRecord.getPolAuthId())
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            throw exp;
+        }
+        //capture check
+        if (Objects.isNull(paymentCaptureRecord)) {
+            String errorDescription = "Authorization is not captured . Cannot request a refund ";
+            exp = new PaymentOrchestrationException(HttpStatus.NOT_FOUND,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(Constants.REFUND_RESPONSE_RECEIVED)
+                    .serviceName(Constants.REFUND_API_CALL)
+                    .errorMessage(errorDescription)
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.NOT_FOUND.value())
+                    .polAuthId(authorizationRecord.getPolAuthId())
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            throw exp;
+        }
+        if (paymentCaptureRecord.getCaptureStatus().equalsIgnoreCase(StatusCodesEnum.RP.name())
+                || paymentCaptureRecord.getCaptureStatus().equalsIgnoreCase(StatusCodesEnum.PN.name())) {
+            String errorDescription = "There is a pending Capture request on this Authorization."
+                    + " Refund Request will be picked up in next run.";
+            exp = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(Constants.REFUND_RESPONSE_RECEIVED)
+                    .serviceName(Constants.REFUND_API_CALL)
+                    .errorMessage(errorDescription)
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.BAD_REQUEST.value())
+                    .polCaptureId(paymentCaptureRecord.getCaptureId())
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            throw exp;
+        }
+        BigInteger captureAmountApproved = paymentCaptureRecord.getCaptureAmountApproved();
+        BigInteger refundAmountRequested = refundRequest.getRefundAmountRequest().getAmount();
+        if (StringUtils.equalsIgnoreCase(paymentCaptureRecord.getCaptureStatus(), StatusCodesEnum.CO.toString())
+                && captureAmountApproved.compareTo(refundAmountRequested) < 0) {
+            String errorDescription = "The captured Amount is lower than the refunded amount.Cannot process a Refund";
+            exp = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(Constants.REFUND_RESPONSE_RECEIVED)
+                    .serviceName(Constants.REFUND_API_CALL)
+                    .errorMessage(errorDescription)
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.BAD_REQUEST.value())
+                    .polCaptureId(paymentCaptureRecord.getCaptureId())
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            throw exp;
+        }
+        //there is a refund request already existed
+        //check sum of the total refund requested amount with cid amount approved
+
+        if (!paymentRefundResponse.isEmpty() && validateRefundAmountRequestedWithPreviousRefundRequest(
+                paymentRefundResponse, paymentCaptureRecord)) {
+            String errorDescription = "The total Refund requested Amount is higher than the refunded amount "
+                    + "requested currently.Cannot process a Refund";
+            exp = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(Constants.REFUND_RESPONSE_RECEIVED)
+                    .serviceName(Constants.REFUND_API_CALL)
+                    .errorMessage(errorDescription)
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.BAD_REQUEST.value())
+                    .polCaptureId(paymentCaptureRecord.getCaptureId())
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            throw exp;
+        }
+        if (StringUtils.equalsIgnoreCase(paymentCaptureRecord.getCaptureResponse(), StatusCodesEnum.FL.toString())
+                || StringUtils.equalsIgnoreCase(paymentCaptureRecord.getCaptureResponse(),
+                ResponseCodesEnum.DL.toString())) {
+            String errorDescription = "This is a failed Capture . Cannot request a refund on failed Capture";
+            exp = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(Constants.REFUND_RESPONSE_RECEIVED)
+                    .serviceName(Constants.REFUND_API_CALL)
+                    .errorMessage(errorDescription)
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.BAD_REQUEST.value())
+                    .polCaptureId(paymentCaptureRecord.getCaptureId())
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            throw exp;
+        }
+        return true;
+    }
+    /**
+     * This method is used to validate Post Void request for duplicate .
+     *
+     * @param authorizationId UUID
+     */
+
+    public boolean isDuplicateVoidRequest(UUID authorizationId) {
+        List<PaymentCancel> paymentCancelResponse = paymentCancelRepository.findByPolAuthId(authorizationId);
+        return !paymentCancelResponse.isEmpty();
+    }
+
+    /**
+     * This method is used to validate Card Entries Callback request parameters for mandatory validations.
+     *
+     * @param notificationRequestItem NotificationRequestItem
+     * @param paymentCapture          PaymentAuthorization
+     */
+
+    public boolean validateCaptureCallBackRequest(
+            NotificationRequestItem notificationRequestItem, PaymentCapture paymentCapture) {
+        String errorMessage = Constants.EMPTY_STRING;
+        boolean isValidationPassed = true;
+        HttpStatus httpStatus = HttpStatus.BAD_REQUEST;
+
+        if (notificationRequestItem.getMerchantReference().equals(paymentCapture.getCaptureId().toString())
+                && notificationRequestItem.getPspReference().equals(paymentCapture.getProcessorCaptureId())
+                && Constants.STATUS_COMPLETE.equals(paymentCapture.getCaptureStatus())) {
+            errorMessage = String.format("Duplicate Capture Notification for PspReference: %s}",
+                    Optional.ofNullable(notificationRequestItem).isPresent()
+                            ? notificationRequestItem.getPspReference() : Constants.EMPTY_STRING);
+            isValidationPassed = false;
+            httpStatus = HttpStatus.CONFLICT;
+        } else if (!StringUtils.equalsIgnoreCase(
+                paymentCapture.getCurrencyCode(), notificationRequestItem.getAmount().getCurrency())) {
+            errorMessage = String.format("Requested Currency Unit '%s' is not matching the Response Currency Unit '%s'",
+                    paymentCapture.getCurrencyCode(),
+                    notificationRequestItem.getAmount().getCurrency());
+            isValidationPassed = false;
+        }
+
+        if (!isValidationPassed) {
+            ErrorDetailDto error = ErrorDetailDto.builder()
+                    .errorDesc(errorMessage)
+                    .errorMessage(errorMessage)
+                    .serviceName(Constants.CAPTURE_CALLBACK_API_CALLBACK)
+                    .httpStatus(httpStatus.value())
+                    .eventCode(Constants.CAPTURE_UPDATED)
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(error);
+        }
+        return isValidationPassed;
+    }
+
+    /**
+     * This method validates the capture request.
+     * @param paymentAuthorizationRecord paymentAuthorizationRecord
+     * @param captureId captureId
+     * @param paymentCapture paymentCapture
+     * @return true/false
+     */
+    public boolean isValidCaptureRequest(PaymentAuthorization paymentAuthorizationRecord, UUID captureId,
+                                         PaymentCapture paymentCapture) {
+
+        String errorDescription = null;
+        HttpStatus httpStatus = null;
+
+        if (paymentAuthorizationRecord == null) {
+            errorDescription = "Authorization ID not found in the  Database";
+            httpStatus = HttpStatus.NOT_FOUND;
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                .eventCode(EventCode.PROCESS_CAPTURE_REQUEST_COMPLETED.getCode())
+                .serviceName(Constants.PROCESS_CAPTURE_API_CALL)
+                .errorMessage(errorDescription)
+                .errorDesc(errorDescription)
+                .httpStatus(HttpStatus.NOT_FOUND.value())
+                .polAuthId(null)
+                .polCaptureId(captureId)
+                .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            paymentCapture.setCaptureStatus(StatusCodesEnum.UP.name());
+            paymentCaptureRepository.save(paymentCapture);
+        } else if (paymentAuthorizationRecord.getAuthStatus().equalsIgnoreCase(StatusCodesEnum.PN.name())) {
+            errorDescription = "Authorization is still Pending. Will be processed in next run";
+            httpStatus = HttpStatus.BAD_REQUEST;
+        } else if (paymentAuthorizationRecord.getAuthResponse() != null
+            && (paymentAuthorizationRecord.getAuthResponse().equalsIgnoreCase(ResponseCodesEnum.DL.name())
+            || paymentAuthorizationRecord.getAuthResponse().equalsIgnoreCase(ResponseCodesEnum.ER.name()))) {
+            errorDescription = "Authorization ID received from API is Declined/Error";
+            httpStatus = HttpStatus.BAD_REQUEST;
+            paymentCapture.setCaptureStatus(StatusCodesEnum.UP.name());
+            paymentCaptureRepository.save(paymentCapture);
+        }
+        if (errorDescription != null) {
+            throw new PaymentOrchestrationException(httpStatus,
+                errorDescription, errorDescription, ErrorSource.POL, new Exception());
+        }
+        return true;
+    }
+}
