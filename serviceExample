@@ -1,0 +1,1005 @@
+package com.sherwinwilliams.service.paymentorchestrationserice.domain.service;
+
+
+import com.sherwinwilliams.service.paymentorchestrationserice.dao.PaymentOrchestrationDao;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.Amount;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.CancelAmountRequested;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.ErrorDetailDto;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.NotificationItem;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.NotificationRequestItem;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.PaymentCaptureRequestResponse;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.PaymentRefundDetails;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.PaymentVoidDetails;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.ProcessorResponse;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.ProcessorType;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.RefundAmountRequested;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.RefundProcessorRequest;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.ResponseCodesEnum;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.StatusCodesEnum;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.VoidAmountRequested;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.VoidProcessorRequest;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.adyen.CaptureResponse;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.adyen.RefundResponse;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.adyen.VoidResponse;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.entity.PaymentAuthorization;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.entity.PaymentCancel;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.entity.PaymentCapture;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.entity.PaymentRefund;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentAccountRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentAuthorizationRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentCancelRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentCaptureRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentLevelDataRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentLineItemRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.repository.PaymentRefundRepository;
+import com.sherwinwilliams.service.paymentorchestrationserice.enm.ErrorSource;
+import com.sherwinwilliams.service.paymentorchestrationserice.enm.EventCode;
+import com.sherwinwilliams.service.paymentorchestrationserice.exception.PaymentOrchestrationException;
+import com.sherwinwilliams.service.paymentorchestrationserice.integration.AdyenIntegrationImpl;
+import com.sherwinwilliams.service.paymentorchestrationserice.util.Constants;
+import com.sherwinwilliams.service.paymentorchestrationserice.util.DateUtil;
+import com.sherwinwilliams.service.paymentorchestrationserice.util.JsonValidationUtil;
+import com.sherwinwilliams.service.paymentorchestrationserice.validator.PaymentOrchestrationModifyValidator;
+import com.sherwinwilliams.service.paymentorchestrationserice.validator.PaymentOrchestrationValidator;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
+
+import java.math.BigInteger;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
+
+@Service
+public class ModifyPaymentServiceImpl implements ModifyPaymentService {
+
+    @Autowired
+    AdyenIntegrationImpl adyenIntegrationImpl;
+
+    @Autowired
+    PaymentLineItemRepository paymentLineItemRepository;
+
+    @Autowired
+    PaymentLevelDataRepository paymentLevelDataRepository;
+
+    @Autowired
+    PaymentCaptureRepository paymentCaptureRepository;
+
+    @Autowired
+    PaymentAuthorizationRepository paymentAuthorizationRepository;
+
+    @Autowired
+    PaymentCancelRepository paymentCancelRepository;
+
+    @Autowired
+    PaymentRefundRepository paymentRefundRepository;
+    @Autowired
+    PaymentOrchestrationDao paymentOrchestrationDao;
+    @Autowired
+    PaymentOrchestrationValidator paymentOrchestrationValidator;
+    @Autowired
+    PaymentOrchestrationModifyValidator paymentOrchestrationModifyValidator;
+
+    @Autowired
+    PaymentAccountRepository paymentAccountRepository;
+    Logger logger = LogManager.getLogger(ModifyPaymentServiceImpl.class);
+    @Value("${branch}")
+    private String branchName;
+
+    /**
+     * This method accepts the request for Capture and persists in database.
+     *
+     * @param authorizationId               Auth ID
+     * @param paymentCaptureRequestResponse PaymentCaptureRequestResponse
+     * @param systemName                    String.
+     * @return ProcessorResponse
+     * @throws PaymentOrchestrationException Excpetion
+     */
+    @Override
+    public ProcessorResponse captureRequest(UUID authorizationId,
+                                            PaymentCaptureRequestResponse paymentCaptureRequestResponse,
+                                            String systemName)
+            throws PaymentOrchestrationException {
+        logger.debug("Beginning captureRequest service method");
+        //Check  AuthId  Input
+        if (authorizationId != null) {
+            paymentOrchestrationDao.saveAuditRecord(EventCode.POST_CAPTURE_REQUEST_RECEIVED.getCode(),
+                    Constants.CAPTURE_API_CALL, null, authorizationId);
+
+            PaymentCapture paymentCapture = paymentOrchestrationDao.insertOrUpdateCaptureAndL23Data(
+                    paymentCaptureRequestResponse, authorizationId, null, null);
+
+            paymentOrchestrationDao.saveAuditRecord(EventCode.POST_CAPTURE_REQUEST_COMPLETED.getCode(),
+                    Constants.CAPTURE_API_CALL, null, authorizationId);
+
+            // TODO: Remove this invocation once the Asynchronous processing is implemented.
+            processCaptureRequest(authorizationId, paymentCapture.getCaptureId(), paymentCaptureRequestResponse,
+                    systemName);
+
+            logger.debug("Ending captureRequest service method - authorizationId :", authorizationId);
+
+            return ProcessorResponse.builder()
+                    .id(String.valueOf(paymentCapture.getCaptureId()))
+                    .transactionTime(String.valueOf(Instant.now()))
+                    .build();
+
+        } else {
+            //return exception auth id empty
+            String errorDescription = "Authorization ID received from API is empty";
+            logger.log(Level.ERROR, errorDescription);
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(EventCode.POST_CAPTURE_REQUEST_COMPLETED.getCode())
+                    .serviceName(Constants.CAPTURE_API_CALL)
+                    .errorMessage("Authorization ID received from API is empty")
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.BAD_REQUEST.value())
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            PaymentOrchestrationException exception = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                    errorDescription);
+            logger.debug("Ending captureRequest service method");
+            throw exception;
+        }
+    }
+
+    /**
+     * This Method is used to update the table with either success or failure depending upon the request.
+     *
+     * @param notificationItem NotificationItem
+     * @return PaymentCapture
+     */
+    @Override
+    public PaymentCapture captureEntriesCallback(NotificationItem notificationItem) {
+        logger.debug("Beginning captureEntriesCallback() method in ModifyPaymentServiceImpl");
+        paymentOrchestrationDao.saveAuditRecord(Constants.CAPTURE_CALLBACK_RECEIVED,
+                Constants.CAPTURE_CALLBACK_API_CALLBACK, null, null);
+
+        NotificationRequestItem notificationRequestItem = notificationItem.getNotificationRequestItem();
+        PaymentCapture paymentCapture = paymentCaptureRepository.findByCaptureId(
+                UUID.fromString(notificationRequestItem.getMerchantReference()));
+        if (Objects.isNull(paymentCapture)) {
+            ErrorDetailDto error = ErrorDetailDto.builder()
+                    .errorDesc("Payment Capture request with PspReference# "
+                            + notificationRequestItem.getPspReference()
+                            + "is not found in Database: ")
+                    .serviceName(Constants.CAPTURE_CALLBACK_API_CALLBACK)
+                    .httpStatus(HttpStatus.NOT_FOUND.value())
+                    .eventCode(Constants.CAPTURE_UPDATED)
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(error);
+            return null;
+        }
+
+        PaymentCapture paymentCaptureUpdated = null;
+        if (paymentOrchestrationModifyValidator.validateCaptureCallBackRequest(
+                notificationRequestItem, paymentCapture)) {
+            paymentCapture.setCaptureStatus(StatusCodesEnum.CO.toString());
+
+            Optional<String> successOptional = Optional.of(notificationRequestItem.getSuccess());
+            Optional<String> output = successOptional.filter("true"::equals);
+            String captureResponse = String.valueOf(ResponseCodesEnum.DL);
+            if (output.isPresent()) {
+                captureResponse = String.valueOf(ResponseCodesEnum.AP);
+            }
+            paymentCapture.setCaptureResponse(captureResponse);
+
+            Integer captureAmountApproved = Integer.valueOf(
+                    Optional.ofNullable(notificationRequestItem.getAmount()).isPresent()
+                            ? notificationRequestItem.getAmount().getValue() : "0");
+            paymentCapture.setCaptureAmountApproved(BigInteger.valueOf(captureAmountApproved));
+
+            paymentCapture.setTransactionTime(
+                    DateUtil.convertDateToIsoDateTime(notificationRequestItem.getEventDate()));
+
+            paymentCaptureUpdated = paymentCaptureRepository.save(paymentCapture);
+
+            paymentOrchestrationDao.saveAuditRecord(Constants.CAPTURE_UPDATED,
+                    Constants.CAPTURE_CALLBACK_API_CALLBACK, null, null);
+        }
+
+        logger.debug("Ending cardEntriesCallback() method in ModifyPaymentServiceImpl");
+        return paymentCaptureUpdated;
+    }
+
+    /**
+     * This method is used to void a request.
+     *
+     * @param authorizationId UUID.
+     * @param voidRequest     VoidAmountRequested.
+     * @param key             String.
+     * @return ProcessorResponse.
+     */
+    @Override
+    public ProcessorResponse voidRequest(UUID authorizationId, VoidAmountRequested voidRequest, String key,
+                                         String systemName) {
+        logger.debug("Beginning voidRequest() method in ModifyPaymentServiceImpl");
+        ProcessorResponse voidResponseBody = null;
+        if (!StringUtils.equalsIgnoreCase(key, "cancels")) {
+            paymentOrchestrationDao.saveAuditRecord(Constants.VOID_API_INTIATED,
+                    Constants.VOID_API_CALL, null,
+                    authorizationId);
+        }
+        PaymentAuthorization authorizationRecord =
+                paymentAuthorizationRepository.findByPolAuthId(authorizationId);
+        //Auth check
+        if (Objects.isNull(authorizationRecord)) {
+            String errorDescription = "Invalid Authorization ID aid: " + authorizationId + " Not Found in Database";
+            PaymentOrchestrationException exp = new PaymentOrchestrationException(HttpStatus.NOT_FOUND,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            logger.error("Authorization id not found in the database");
+            throw exp;
+        }
+        List<PaymentCapture> paymentCaptureResponse =
+                paymentCaptureRepository.findByPolAuthId(authorizationId);
+        //capture check
+        if (!CollectionUtils.isEmpty(paymentCaptureResponse)) {
+            String errorDescription = "Authorization is already captured . Please request a refund instead of Void";
+            PaymentOrchestrationException exp = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            logger.error("Authorization is already captured . Please request a refund instead of Void");
+            throw exp;
+        }
+
+
+        //duplicate check
+        if (paymentOrchestrationModifyValidator.isDuplicateVoidRequest(
+                authorizationId)) {
+            PaymentCancel paymentCancel = PaymentCancel.builder()
+                    .cancelAmountRequested(voidRequest.getVoidAmountRequest().getAmount())
+                    .createdTime(LocalDateTime.now())
+                    .polAuthId(authorizationId)
+                    .cancelStatus(StatusCodesEnum.DP.toString())
+                    .currencyCode(voidRequest.getVoidAmountRequest().getCurrencyCode())
+                    .processorType(String.valueOf(ProcessorType.AD))
+                    .build();
+            PaymentCancel paymentCancelResponse = paymentCancelRepository.save(paymentCancel);
+            voidResponseBody = ProcessorResponse.builder().id(String.valueOf(paymentCancelResponse.getCancelId()))
+                    .transactionTime(String.valueOf(Instant.now())).build();
+            paymentOrchestrationDao.saveAuditRecord(Constants.VOID_RESPONSE_RECEIVED,
+                    Constants.VOID_API_CALL, null,
+                    authorizationId);
+            logger.debug("Ending voidRequest() method in ModifyPaymentServiceImpl");
+            return voidResponseBody;
+
+
+        }
+
+        PaymentCancel paymentCancel = PaymentCancel.builder()
+                .cancelAmountRequested(voidRequest.getVoidAmountRequest().getAmount())
+                .createdTime(LocalDateTime.now())
+                .polAuthId(authorizationId)
+                .cancelStatus(StatusCodesEnum.RP.toString())
+                .currencyCode(voidRequest.getVoidAmountRequest().getCurrencyCode())
+                .processorType(String.valueOf(ProcessorType.AD))
+                .build();
+
+        PaymentCancel paymentCancelResponse = paymentCancelRepository.save(paymentCancel);
+        // TODO: Remove this invocation when Asynchronous processing is implemented.
+        processVoidRequest(authorizationId, paymentCancelResponse.getCancelId(),
+                PaymentVoidDetails.builder().voidAmountRequest(voidRequest.getVoidAmountRequest()).build(),
+                systemName);
+
+
+        voidResponseBody = ProcessorResponse.builder().id(String.valueOf(paymentCancelResponse.getCancelId()))
+                .transactionTime(String.valueOf(Instant.now())).build();
+        paymentOrchestrationDao.saveAuditRecord(Constants.VOID_RESPONSE_RECEIVED,
+                Constants.VOID_API_CALL, null,
+                authorizationId);
+        logger.debug("Ending voidRequest() method in ModifyPaymentServiceImpl");
+        return voidResponseBody;
+
+    }
+
+
+    /**
+     * This method takes care of business sequence of steps including making real time call to
+     * Processor for void, persisting necessary data into database.
+     *
+     * @param authorizationId UUID
+     * @param voidId          UUID
+     * @param voidRequest     PaymentVoidDetails
+     * @return PaymentVoidDetails
+     */
+    @Override
+    public PaymentVoidDetails processVoidRequest(UUID authorizationId, UUID voidId, PaymentVoidDetails voidRequest,
+                                                 String systemName) {
+
+        logger.debug("Beginning processVoidRequest() method in ModifyPaymentServiceImpl - authorizationId :",
+                authorizationId);
+        paymentOrchestrationDao.saveAuditRecord(Constants.VOID_API_INTIATED,
+                Constants.VOID_API_CALL,
+                null, authorizationId);
+
+        PaymentCancel voidRecord = paymentCancelRepository.findByCancelId(voidId);
+
+        if (Objects.isNull(voidRecord)) {
+            String errorDescription = "Invalid VOID ID vid: " + voidId + " Not Found in Database";
+            PaymentOrchestrationException exp = new PaymentOrchestrationException(HttpStatus.NOT_FOUND,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            logger.error("Void id not found in the database");
+            throw exp;
+        }
+
+        PaymentVoidDetails paymentVoidDetails = PaymentVoidDetails.builder()
+                .voidStatus(voidRecord.getCancelStatus())
+                .voidId(voidRecord.getCancelId().toString())
+                .voidAmountRequest(voidRequest.getVoidAmountRequest())
+                .createdTime(Optional.ofNullable(voidRecord.getCreatedTime()).isPresent()
+                        ? voidRecord.getCreatedTime().toString() : null)
+                .updatedTime(Optional.ofNullable(voidRecord.getUpdatedTime()).isPresent()
+                        ? voidRecord.getUpdatedTime().toString() : null)
+                .archivedTime(Optional.ofNullable(voidRecord.getArchivedTime()).isPresent()
+                        ? voidRecord.getArchivedTime().toString() : null)
+                .transactionTime(Optional.ofNullable(voidRecord.getTransactionTime()).isPresent()
+                        ? voidRecord.getTransactionTime().toString() : null)
+                .build();
+        StatusCodesEnum updatedVoidStatus = null;
+        String errorDescription = null;
+        HttpStatus httpStatus = null;
+
+        try {
+            //Auth check
+            PaymentAuthorization paymentAuthorizationRecord =
+                    paymentAuthorizationRepository.findByPolAuthId(authorizationId);
+            if (paymentAuthorizationRecord == null) {
+                errorDescription = "Authorization ID not found in the  Database";
+                updatedVoidStatus = StatusCodesEnum.UP;
+                httpStatus = HttpStatus.NOT_FOUND;
+                return null;
+            }
+            if (paymentAuthorizationRecord.getAuthStatus().equalsIgnoreCase(StatusCodesEnum.PN.name())) {
+                errorDescription = "Authorization is still Pending. Void Request will be picked up in next run.";
+                httpStatus = HttpStatus.BAD_REQUEST;
+                return null;
+            }
+            if (paymentAuthorizationRecord.getAuthResponse() != null
+                    && (paymentAuthorizationRecord.getAuthResponse().equalsIgnoreCase(ResponseCodesEnum.DL.name())
+                    || paymentAuthorizationRecord.getAuthResponse().equalsIgnoreCase(ResponseCodesEnum.ER.name()))) {
+                errorDescription = "Authorization ID received from API is Declined/Error";
+                updatedVoidStatus = StatusCodesEnum.UP;
+                httpStatus = HttpStatus.BAD_REQUEST;
+                return null;
+            }
+
+            List<PaymentCapture> paymentCaptureResponse = paymentCaptureRepository.findByPolAuthId(authorizationId);
+            //capture check
+            if (!CollectionUtils.isEmpty(paymentCaptureResponse)) {
+                if (paymentCaptureResponse.get(0).getCaptureStatus()
+                        .equalsIgnoreCase(StatusCodesEnum.RP.name())
+                        || paymentCaptureResponse.get(0).getCaptureStatus().equalsIgnoreCase(
+                        StatusCodesEnum.PN.name())) {
+                    errorDescription = "There is a pending Capture request on this Authorization."
+                            + " Void Request will be picked up in next run.";
+                    httpStatus = HttpStatus.BAD_REQUEST;
+                    return null;
+                } else if (paymentCaptureResponse.get(0).getCaptureStatus().equalsIgnoreCase(
+                        StatusCodesEnum.CO.name())) {
+                    errorDescription = "Authorization is already captured . Please request a refund instead of Void";
+                    updatedVoidStatus = StatusCodesEnum.UP;
+                    httpStatus = HttpStatus.BAD_REQUEST;
+                    return null;
+                }
+            }
+            //duplicate check
+            if (paymentOrchestrationValidator.isDuplicateVoidRequest(authorizationId, voidId)) {
+                errorDescription = "Duplicate Void Request";
+                updatedVoidStatus = StatusCodesEnum.DP;
+                httpStatus = HttpStatus.BAD_REQUEST;
+                return null;
+            }
+            String merchantAccount = paymentAccountRepository.findBySystemNameAndBranchName(systemName, branchName);
+            VoidProcessorRequest requestForVoid = VoidProcessorRequest.builder()
+                    .merchantAccount(merchantAccount)
+                    .reference(String.valueOf(voidRecord.getCancelId()))
+                    .build();
+
+            VoidResponse voidResponse = adyenIntegrationImpl.postVoid(requestForVoid, authorizationId,
+                    paymentAuthorizationRecord.getProcessorAuthId());
+            voidRecord.setProcessorVoidId(voidResponse.getPspReference());
+            voidRecord.setCancelStatus(StatusCodesEnum.PN.name());
+            paymentCancelRepository.save(voidRecord);
+            // Map Response
+            paymentVoidDetails.setVoidStatus(voidRecord.getCancelStatus());
+
+            paymentOrchestrationDao.saveAuditRecord(Constants.VOID_RESPONSE_RECEIVED,
+                    Constants.VOID_API_CALL,
+                    null, authorizationId);
+            logger.debug("Ending processVoidRequest() method in ModifyPaymentServiceImpl");
+
+            return paymentVoidDetails;
+
+        } catch (PaymentOrchestrationException exception) {
+            voidRecord.setCancelStatus(StatusCodesEnum.ER.name());
+            paymentCancelRepository.save(voidRecord);
+            throw exception;
+        } finally {
+            if (updatedVoidStatus != null) {
+                voidRecord.setCancelStatus(updatedVoidStatus.name());
+                paymentCancelRepository.save(voidRecord);
+            }
+            if (errorDescription != null) {
+                logger.log(Level.ERROR, errorDescription);
+                ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                        .eventCode(Constants.VOID_RESPONSE_RECEIVED)
+                        .serviceName(Constants.VOID_API_CALL)
+                        .errorMessage(errorDescription)
+                        .errorDesc(errorDescription)
+                        .httpStatus(httpStatus.value())
+                        .polAuthId(authorizationId)
+                        .build();
+                paymentOrchestrationDao.saveErrorRecord(errorDetails);
+
+                PaymentOrchestrationException exception = new PaymentOrchestrationException(
+                        httpStatus, errorDescription);
+                throw exception;
+            }
+        }
+    }
+
+    /**
+     * This method takes care of business sequence of steps including making real time call to
+     * Processor for capture, persisting necessary data into database.
+     *
+     * @param authorizationId        UUID
+     * @param captureId              UUID
+     * @param captureRequestResponse PaymentCaptureRequestResponse
+     * @return ResponseEntity
+     */
+    @Override
+    public PaymentCaptureRequestResponse processCaptureRequest(
+            UUID authorizationId, UUID captureId, PaymentCaptureRequestResponse captureRequestResponse,
+            String systemName) {
+        logger.debug("Beginning processCaptureRequest service method - authorizationId :"
+                + authorizationId + " captureID: " + captureId);
+
+        //Check  AuthId  Input
+        if (authorizationId != null && captureId != null) {
+            paymentOrchestrationDao.saveAuditRecord(EventCode.PROCESS_CAPTURE_REQUEST_RECEIVED.getCode(),
+                    Constants.PROCESS_CAPTURE_API_CALL, null, authorizationId);
+
+            PaymentCapture paymentCapture = paymentCaptureRepository.findByCaptureId(captureId);
+
+            if (Objects.isNull(paymentCapture)) {
+                String errorDescription = "Capture ID not found in the  Database";
+                PaymentOrchestrationException exception = new PaymentOrchestrationException(HttpStatus.NOT_FOUND,
+                        errorDescription, errorDescription, ErrorSource.POL, new Exception());
+                logger.log(Level.ERROR, errorDescription);
+                ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                        .eventCode(EventCode.PROCESS_CAPTURE_REQUEST_COMPLETED.getCode())
+                        .serviceName(Constants.PROCESS_CAPTURE_API_CALL)
+                        .errorMessage("Capture ID not found in the  Database")
+                        .errorDesc(errorDescription).httpStatus(HttpStatus.NOT_FOUND.value())
+                        .polAuthId(authorizationId)
+                        .polCaptureId(captureId)
+                        .build();
+                paymentOrchestrationDao.saveErrorRecord(errorDetails);
+                throw exception;
+            }
+            StatusCodesEnum updatedCaptureStatus = null;
+            String errorDescription = null;
+            HttpStatus httpStatus = null;
+
+            try {
+                PaymentAuthorization paymentAuthorizationRecord =
+                        paymentAuthorizationRepository.findByPolAuthId(authorizationId);
+                //validate capture request
+                if (paymentOrchestrationModifyValidator.isValidCaptureRequest(paymentAuthorizationRecord, captureId,
+                        paymentCapture)) {
+                    String processorAuthId = paymentAuthorizationRecord.getProcessorAuthId();
+                    logger.debug("Calling Adyen Processor for Capture API");
+                    CaptureResponse processorCaptureResponse = null;
+                    processorCaptureResponse = adyenIntegrationImpl.callCaptureApi(
+                            processorAuthId, captureRequestResponse, authorizationId, captureId,
+                            systemName, branchName);
+
+                    if (processorCaptureResponse == null) {
+                        errorDescription = "Null response received from processor for Capture API";
+                        updatedCaptureStatus = StatusCodesEnum.ER;
+                        httpStatus = HttpStatus.INTERNAL_SERVER_ERROR;
+                        return null;
+                    }
+                    //persist the data and prepare capture response
+                    PaymentCapture paymentCaptureUpdated =
+                            paymentOrchestrationDao.insertOrUpdateCaptureAndL23Data(captureRequestResponse,
+                                    authorizationId, processorCaptureResponse, paymentCapture);
+
+                    paymentOrchestrationDao.saveAuditRecord(EventCode.PROCESS_CAPTURE_REQUEST_COMPLETED.getCode(),
+                            Constants.PROCESS_CAPTURE_API_CALL, null, authorizationId);
+
+                    logger.debug("Ending processCaptureRequest service method - authorizationId :"
+                            + authorizationId + " captureID: " + captureId);
+
+                    prepareCaptureResponse(captureRequestResponse, paymentCaptureUpdated);
+
+                    return captureRequestResponse;
+                }
+                return null;
+            } catch (PaymentOrchestrationException exception) {
+                paymentCapture.setCaptureStatus(StatusCodesEnum.ER.name());
+                paymentCaptureRepository.save(paymentCapture);
+                throw exception;
+            } finally {
+                if (updatedCaptureStatus != null) {
+                    paymentCapture.setCaptureStatus(updatedCaptureStatus.name());
+                    paymentCaptureRepository.save(paymentCapture);
+                }
+                if (errorDescription != null) {
+                    logger.log(Level.ERROR, errorDescription);
+                    ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                            .eventCode(EventCode.PROCESS_CAPTURE_REQUEST_COMPLETED.getCode())
+                            .serviceName(Constants.PROCESS_CAPTURE_API_CALL)
+                            .errorMessage(errorDescription)
+                            .errorDesc(errorDescription)
+                            .httpStatus(httpStatus.value())
+                            .polAuthId(authorizationId)
+                            .polCaptureId(captureId)
+                            .build();
+                    paymentOrchestrationDao.saveErrorRecord(errorDetails);
+
+                    PaymentOrchestrationException exception = new PaymentOrchestrationException(
+                            httpStatus, errorDescription);
+                    throw exception;
+                }
+            }
+        } else {
+            //return exception auth id empty
+            String errorDescription = "Authorization ID / Capture ID received from API is empty";
+            PaymentOrchestrationException exception = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                    errorDescription);
+            logger.log(Level.ERROR, errorDescription);
+            ErrorDetailDto errorDetails = ErrorDetailDto.builder()
+                    .eventCode(EventCode.PROCESS_CAPTURE_REQUEST_COMPLETED.getCode())
+                    .serviceName(Constants.PROCESS_CAPTURE_API_CALL)
+                    .errorMessage("Authorization ID / Capture ID received from API is empty")
+                    .errorDesc(errorDescription)
+                    .httpStatus(HttpStatus.BAD_REQUEST.value())
+                    .polAuthId(authorizationId)
+                    .polCaptureId(captureId)
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(errorDetails);
+            throw exception;
+        }
+    }
+
+    /**
+     * This method is used to prepare the capture response.
+     *
+     * @param captureRequestResponse captureRequestResponse
+     * @param paymentCapture         paymentCapture
+     */
+    void prepareCaptureResponse(PaymentCaptureRequestResponse captureRequestResponse, PaymentCapture paymentCapture) {
+        captureRequestResponse.setCaptureId(paymentCapture.getCaptureId().toString());
+        captureRequestResponse.setCreatedTime(
+                Optional.ofNullable(paymentCapture.getCreatedTime()).isPresent()
+                        ? paymentCapture.getCreatedTime().toString() : null);
+        captureRequestResponse.setUpdatedTime(
+                Optional.ofNullable(paymentCapture.getUpdatedTime()).isPresent()
+                        ? paymentCapture.getUpdatedTime().toString() : null);
+        captureRequestResponse.setTransactionTime(
+                Optional.ofNullable(paymentCapture.getTransactionTime()).isPresent()
+                        ? paymentCapture.getTransactionTime().toString() : null);
+        captureRequestResponse.setArchivedTime(
+                Optional.ofNullable(paymentCapture.getArchivedTime()).isPresent()
+                        ? paymentCapture.getArchivedTime().toString() : null);
+        captureRequestResponse.setCaptureStatus(paymentCapture.getCaptureStatus());
+        captureRequestResponse.setCaptureResponse(paymentCapture.getCaptureResponse());
+    }
+
+
+    /**
+     * This Cancel Method is used to update the table with either success or failure depending upon the request.
+     *
+     * @param notificationItem NotificationItem
+     * @return PaymentCancel
+     */
+
+    @Override
+    public PaymentCancel cancelCallBack(NotificationItem notificationItem) {
+
+        logger.debug("Beginning cancelCallBack() method in ModifyPaymentServiceImpl");
+        paymentOrchestrationDao.saveAuditRecord(Constants.CANCELLATION_CALLBACK_RECEIVED,
+                Constants.CANCELLATION_CALLBACK_API_CALLBACK, null, null);
+
+        NotificationRequestItem notificationRequestItem = notificationItem.getNotificationRequestItem();
+        PaymentCancel paymentCancel = paymentCancelRepository.findByCancelId(
+                UUID.fromString(notificationRequestItem.getMerchantReference()));
+        if (Objects.isNull(paymentCancel)) {
+            ErrorDetailDto error = ErrorDetailDto.builder()
+                    .errorDesc("Payment Cancel request with PspReference# "
+                            + notificationRequestItem.getPspReference()
+                            + "is not found in Database: ")
+                    .serviceName(Constants.CANCELLATION_CALLBACK_API_CALLBACK)
+                    .httpStatus(HttpStatus.NOT_FOUND.value())
+                    .eventCode(Constants.CANCELLATION_UPDATED)
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(error);
+            return null;
+        }
+
+        PaymentCancel paymentCancelUpdated = null;
+        if (paymentOrchestrationValidator.validateCancelCallBackRequest(
+                notificationRequestItem, paymentCancel)) {
+            paymentCancel.setCancelStatus(StatusCodesEnum.CO.toString());
+
+            Optional<String> successOptional = Optional.of(notificationRequestItem.getSuccess());
+            Optional<String> output = successOptional.filter("true"::equals);
+            String cancelResponse = String.valueOf(ResponseCodesEnum.DL);
+            if (output.isPresent()) {
+                cancelResponse = String.valueOf(ResponseCodesEnum.AP);
+            }
+            paymentCancel.setCancelResponse(cancelResponse);
+
+            Integer cancelAmountApproved = Integer.valueOf(
+                    Optional.ofNullable(notificationRequestItem.getAmount()).isPresent()
+                            ? notificationRequestItem.getAmount().getValue() : "0");
+            paymentCancel.setCancelAmountApproved(BigInteger.valueOf(cancelAmountApproved));
+
+            paymentCancel.setTransactionTime(
+                    DateUtil.convertDateToIsoDateTime(notificationRequestItem.getEventDate()));
+
+            paymentCancelUpdated = paymentCancelRepository.save(paymentCancel);
+
+            paymentOrchestrationDao.saveAuditRecord(Constants.CANCELLATION_UPDATED,
+                    Constants.CANCELLATION_CALLBACK_API_CALLBACK, null, null);
+        }
+
+        logger.debug("Ending cancelCallBack() method in ModifyPaymentServiceImpl");
+        return paymentCancelUpdated;
+
+    }
+
+
+    /**
+     * This Method is used to refund.
+     *
+     * @param authorizationId UUID.
+     * @param captureId       UUID.
+     * @param refundRequest   RefundAmountRequested.
+     * @return ProcessorResponse.
+     */
+    @Override
+    public ProcessorResponse refundRequest(UUID authorizationId, UUID captureId, RefundAmountRequested refundRequest,
+                                           String systemName) {
+        logger.debug("Beginning refundRequest() method in ModifyPaymentServiceImpl");
+
+
+        paymentOrchestrationDao.saveAuditRecord(Constants.REFUND_API_INTIATED,
+                Constants.REFUND_API_CALL, null,
+                authorizationId, null, null, null);
+        PaymentAuthorization authorizationRecord =
+                paymentAuthorizationRepository.findByPolAuthId(authorizationId);
+        //Auth check
+        if (Objects.isNull(authorizationRecord)) {
+            String errorDescription = "Invalid Authorization ID aid: " + authorizationId + " Not Found in Database";
+            PaymentOrchestrationException exp = new PaymentOrchestrationException(HttpStatus.NOT_FOUND,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            logger.error("Authorization id not found in the database");
+            throw exp;
+        }
+        PaymentCapture paymentCaptureResponse =
+                paymentCaptureRepository.findByCaptureId(captureId);
+        //capture check
+        if (Objects.isNull(paymentCaptureResponse)) {
+            String errorDescription = "Authorization is not captured . Cannot request a refund ";
+            PaymentOrchestrationException exp = new PaymentOrchestrationException(HttpStatus.NOT_FOUND,
+                    errorDescription, errorDescription, ErrorSource.POL, new Exception());
+            logger.error("Authorization is not captured . Cannot request a refund ");
+            throw exp;
+        }
+
+        PaymentRefund paymentRefund = PaymentRefund.builder()
+                .refundAmountRequested(refundRequest.getRefundAmountRequest().getAmount())
+                .createdTime(LocalDateTime.now())
+                .polAuthId(authorizationId)
+                .captureId(captureId)
+                .refundStatus(StatusCodesEnum.RP.toString())
+                .refundType("Partial")
+                .currencyCode(refundRequest.getRefundAmountRequest().getCurrencyCode())
+                .processorType(String.valueOf(ProcessorType.AD))
+                .build();
+        PaymentRefund paymentRefundSaved = paymentRefundRepository.save(paymentRefund);
+
+        // TODO: Remove this invocation when Asynchronous processing is implemented.
+        processRefundRequest(authorizationId, captureId,
+                PaymentRefundDetails.builder()
+                        .refundId(String.valueOf(paymentRefundSaved.getRefundId()))
+                        .refundAmountRequest(refundRequest.getRefundAmountRequest()).build(), systemName);
+        logger.debug("Ending refundRequest() method in ModifyPaymentServiceImpl");
+
+        return ProcessorResponse.builder().id(
+                        String.valueOf(paymentRefundSaved.getRefundId()))
+                .transactionTime(String.valueOf(Instant.now())).build();
+    }
+
+    @Override
+    public PaymentRefundDetails processRefundRequest(UUID authorizationId, UUID captureId,
+                                                     PaymentRefundDetails refundRequest, String systemName) {
+        logger.debug("Beginning processRefundRequest() method in ModifyPaymentServiceImpl");
+
+        paymentOrchestrationDao.saveAuditRecord(Constants.REFUND_API_INTIATED,
+                Constants.REFUND_API_CALL, null,
+                authorizationId);
+        String refundId = refundRequest.getRefundId();
+        if (!JsonValidationUtil.isvalidUuid(refundId)) {
+            ErrorDetailDto error = ErrorDetailDto.builder()
+                    .errorDesc("Not able to process the callback as the Refund Id is not a UUID format")
+                    .errorMessage("Merchant reference not recognized by POL")
+                    .build();
+            error.setServiceName(Constants.REFUND_API_CALL);
+            error.setEventCode(Constants.REFUND_UPDATED);
+            paymentOrchestrationDao.saveErrorRecord(error);
+        } else {
+            PaymentAuthorization authorizationRecord =
+                    paymentAuthorizationRepository.findByPolAuthId(authorizationId);
+            PaymentCapture paymentCaptureRecord =
+                    paymentCaptureRepository.findByCaptureId(captureId);
+            List<PaymentRefund> paymentRefundResponse = paymentRefundRepository.findByPolAuthId(authorizationId);
+
+            PaymentRefund paymentRefund = paymentRefundRepository.findByRefundId(UUID.fromString(refundId));
+            if (Objects.isNull(paymentRefund)) {
+                String errorDescription = "Invalid Refund ID : " + refundId + " Not Found in Database";
+                PaymentOrchestrationException exp = new PaymentOrchestrationException(HttpStatus.NOT_FOUND,
+                        errorDescription, errorDescription, ErrorSource.POL, new Exception());
+                logger.error("Refund id not found in the database");
+                throw exp;
+            }
+
+            PaymentRefundDetails paymentRefundDetails = PaymentRefundDetails.builder()
+                    .refundStatus(paymentRefund.getRefundStatus())
+                    .refundId(refundRequest.getRefundId())
+                    .refundAmountRequest(refundRequest.getRefundAmountRequest())
+                    .createdTime(Optional.ofNullable(refundRequest.getCreatedTime()).isPresent()
+                            ? refundRequest.getCreatedTime() : null)
+                    .updatedTime(Optional.ofNullable(refundRequest.getUpdatedTime()).isPresent()
+                            ? refundRequest.getCreatedTime() : null)
+                    .archivedTime(Optional.ofNullable(refundRequest.getArchivedTime()).isPresent()
+                            ? refundRequest.getCreatedTime() : null)
+                    .build();
+            if (paymentOrchestrationModifyValidator.isRequestRefundEligible(authorizationRecord,
+                    paymentCaptureRecord, paymentRefundResponse,
+                    new RefundAmountRequested(refundRequest.getRefundAmountRequest()))) {
+
+                if (StringUtils.equalsIgnoreCase(paymentCaptureRecord.getCaptureStatus(), StatusCodesEnum.CO.toString())
+                        && Objects.nonNull(paymentCaptureRecord.getProcessorCaptureId())) {
+                    String merchantAccount = paymentAccountRepository.findBySystemNameAndBranchName(systemName,
+                            branchName);
+                    RefundProcessorRequest requestForRefund = RefundProcessorRequest.builder()
+                            .merchantAccount(merchantAccount)
+                            .reference(String.valueOf(paymentRefund.getRefundId()))
+                            .amount(Amount.builder()
+                                    .value(String.valueOf(refundRequest.getRefundAmountRequest().getAmount()))
+                                    .currency(refundRequest.getRefundAmountRequest().getCurrencyCode())
+                                    .build())
+                            .build();
+
+                    RefundResponse refundResponse =
+                            adyenIntegrationImpl.postRefund(requestForRefund, authorizationId,
+                                    authorizationRecord.getProcessorAuthId());
+                    paymentRefund.setProcessorRefundId(refundResponse.getPspReference());
+                    paymentRefund.setRefundStatus(StatusCodesEnum.PN.toString());
+                    paymentRefundRepository.save(paymentRefund);
+                    paymentRefundDetails.setRefundStatus(paymentRefund.getRefundStatus());
+
+                    paymentOrchestrationDao.saveAuditRecord(Constants.REFUND_RESPONSE_RECEIVED,
+                            Constants.REFUND_API_CALL,
+                            null, authorizationId, null, paymentRefund.getRefundId(), null);
+
+                } else {
+                    String errorDescription =
+                            "Unable to process callback request as capture PSP reference is not found in "
+                                    + "POL/invalid capture status ";
+                    PaymentOrchestrationException exp = new PaymentOrchestrationException(HttpStatus.BAD_REQUEST,
+                            errorDescription, errorDescription, ErrorSource.POL, new Exception());
+                    throw exp;
+                }
+                logger.debug("Ending processRefundRequest() method in ModifyPaymentServiceImpl");
+                return paymentRefundDetails;
+            }
+
+
+        }
+        return null;
+    }
+
+    /**
+     * This Method is used to cancel.
+     *
+     * @param authorizationId UUID.
+     * @param cancelRequest   CancelAmountRequested.
+     * @return ProcessorResponse.
+     */
+    @Override
+    public ProcessorResponse cancelRequest(UUID authorizationId, CancelAmountRequested cancelRequest,
+                                           String systemName) {
+        logger.debug("Inside cancelRequest service method");
+        paymentOrchestrationDao.saveAuditRecord(Constants.CANCEL_API_INTIATED,
+                Constants.CANCEL_API_CALL, null,
+                authorizationId, null, null, null);
+        List<PaymentCapture> paymentCaptureList =
+                paymentCaptureRepository.findByPolAuthId(authorizationId);
+        if (CollectionUtils.isEmpty(paymentCaptureList)) {
+            //no captures found - process void
+            return processVoid(authorizationId, cancelRequest, systemName);
+        } else {
+            //process refund if captures found
+            return processRefund(authorizationId, cancelRequest, systemName);
+        }
+    }
+
+    /**
+     * This method will be called in cancels refund flow.
+     *
+     * @param authorizationId authorization id
+     * @param cancelRequest   Cancel Request
+     * @return ProcessorResponse processor response
+     */
+    public ProcessorResponse processRefund(UUID authorizationId, CancelAmountRequested cancelRequest,
+                                           String systemName) {
+        //proceed with refund
+        //build Payment Refund request
+        PaymentRefund paymentRefund = buildPaymentRefund(authorizationId, cancelRequest);
+        //save the payment refund record
+        PaymentRefund paymentRefundSaved = paymentRefundRepository.save(paymentRefund);
+        RefundProcessorRequest requestForRefund = buildRefundProcessorRequest(paymentRefundSaved,
+                paymentRefund, systemName);
+        //find auth record based on auth id
+        PaymentAuthorization authorizationRecord =
+                paymentAuthorizationRepository.findByPolAuthId(authorizationId);
+        //post refund request to Adyen
+        RefundResponse refundResponse =
+                adyenIntegrationImpl.postRefund(requestForRefund, authorizationId,
+                        authorizationRecord.getProcessorAuthId());
+        paymentRefund.setProcessorRefundId(refundResponse.getPspReference());
+        paymentRefundRepository.save(paymentRefund);
+        //save audit record
+        paymentOrchestrationDao.saveAuditRecord(Constants.CANCEL_RESPONSE_RECEIVED,
+                Constants.CANCEL_API_CALL,
+                null, authorizationId, null,
+                paymentRefundSaved.getRefundId(), null);
+        logger.debug("Exit cancelRequest service method");
+        return ProcessorResponse.builder().id(
+                        String.valueOf(paymentRefundSaved.getRefundId()))
+                .transactionTime(String.valueOf(Instant.now())).build();
+    }
+
+    /**
+     * This method builds the RefundProcessorRequest.
+     *
+     * @param paymentRefundSaved Payment Refund Saved
+     * @param paymentRefund      Payment Refund
+     * @return RefundProcessorRequest refund processor request
+     */
+    private RefundProcessorRequest buildRefundProcessorRequest(PaymentRefund paymentRefundSaved,
+                                                               PaymentRefund paymentRefund, String systemName) {
+        String merchantAccount = paymentAccountRepository.findBySystemNameAndBranchName(systemName, branchName);
+
+        return RefundProcessorRequest.builder()
+                .merchantAccount(merchantAccount)
+                .reference(String.valueOf(paymentRefundSaved.getRefundId()))
+                .amount(Amount.builder()
+                        .value(String.valueOf(paymentRefund.getRefundAmountRequested()))
+                        .currency(paymentRefund.getCurrencyCode())
+                        .build())
+                .build();
+    }
+
+    /**
+     * This method builds the PaymentRefund.
+     *
+     * @param authorizationId auth id
+     * @param cancelRequest   cancel request
+     * @return PaymentRefund Payment Refund
+     */
+    private PaymentRefund buildPaymentRefund(UUID authorizationId, CancelAmountRequested cancelRequest) {
+        return PaymentRefund.builder()
+                .refundAmountRequested(cancelRequest.getCancelAmountRequest().getAmount())
+                .createdTime(LocalDateTime.now())
+                .polAuthId(authorizationId)
+                .refundStatus(StatusCodesEnum.PN.toString())
+                .refundType("Full")
+                .currencyCode(cancelRequest.getCancelAmountRequest().getCurrencyCode())
+                .processorType(String.valueOf(ProcessorType.AD))
+                .build();
+    }
+
+    /**
+     * This method will be called in cancels void flow.
+     *
+     * @param authorizationId auth id
+     * @param cancelRequest   cancel request
+     * @return ProcessorResponse processor response
+     */
+    ProcessorResponse processVoid(UUID authorizationId, CancelAmountRequested cancelRequest, String systemName) {
+        //proceed with void
+        VoidAmountRequested voidAmountRequested = VoidAmountRequested.builder()
+                .voidAmountRequest(cancelRequest.getCancelAmountRequest())
+                .build();
+        //invoke voidRequest
+        ProcessorResponse processorResponseVoid = voidRequest(authorizationId, voidAmountRequested,
+                "Cancels", systemName);
+        paymentOrchestrationDao.saveAuditRecord(Constants.CANCEL_RESPONSE_RECEIVED,
+                Constants.CANCEL_API_CALL,
+                null, authorizationId, null, null, UUID.fromString(processorResponseVoid.getId()));
+        logger.debug("Exit cancelRequest service method");
+
+        return processorResponseVoid;
+    }
+
+    /**
+     * This Method is used to update the refund table with either success or failure depending upon
+     * the request.
+     *
+     * @param notificationItem notificationItem
+     * @return paymentRefundUpdated
+     */
+    public PaymentRefund refundCallback(NotificationItem notificationItem) {
+        logger.debug("Beginning refundCallback() method in ModifyPaymentServiceImpl");
+        paymentOrchestrationDao.saveAuditRecord(Constants.REFUND_CALLBACK_RECEIVED,
+                Constants.REFUND_CALLBACK_API_CALLBACK, null, null, null, null, null);
+        NotificationRequestItem notificationRequestItem = notificationItem.getNotificationRequestItem();
+        PaymentRefund paymentRefund = paymentRefundRepository.findByRefundId(
+                UUID.fromString(notificationRequestItem.getMerchantReference()));
+        if (Objects.isNull(paymentRefund)) {
+            ErrorDetailDto error = ErrorDetailDto.builder()
+                    .errorDesc("Payment Refund request with PspReference# "
+                            + notificationRequestItem.getPspReference()
+                            + "is not found in Database: ")
+                    .serviceName(Constants.CAPTURE_CALLBACK_API_CALLBACK)
+                    .httpStatus(HttpStatus.NOT_FOUND.value())
+                    .eventCode(Constants.CAPTURE_UPDATED)
+                    .build();
+            paymentOrchestrationDao.saveErrorRecord(error);
+            return null;
+        }
+
+        PaymentRefund paymentRefundUpdated = null;
+        if (paymentOrchestrationValidator.validateRefundCallBackRequest(
+                notificationRequestItem, paymentRefund)) {
+            paymentRefund.setRefundStatus(StatusCodesEnum.CO.toString());
+
+            Optional<String> successOptional = Optional.of(notificationRequestItem.getSuccess());
+            Optional<String> output = successOptional.filter("true"::equals);
+            String refundResponse = String.valueOf(ResponseCodesEnum.DL);
+            if (output.isPresent()
+                    && !Constants.ADYEN_EVENT_REFUND_FAILED
+                    .equalsIgnoreCase(notificationRequestItem.getEventCode())
+                    && !Constants.ADYEN_EVENT_REFUNDED_REVERSED
+                    .equalsIgnoreCase(notificationRequestItem.getEventCode())) {
+                refundResponse = String.valueOf(ResponseCodesEnum.AP);
+            }
+            paymentRefund.setRefundResponse(refundResponse);
+            if (output.isEmpty()) {
+                String reason = notificationRequestItem.getReason();
+                paymentRefund.setReason(reason);
+            }
+            int refundAmountApproved = Integer.parseInt(Optional
+                    .ofNullable(notificationRequestItem.getAmount()).isPresent()
+                    ? notificationRequestItem.getAmount().getValue() : "0");
+            paymentRefund.setRefundAmountApproved(BigInteger.valueOf(refundAmountApproved));
+
+            paymentRefund.setTransactionTime(
+                    DateUtil.convertDateToIsoDateTime(notificationRequestItem.getEventDate()));
+
+            paymentRefundUpdated = paymentRefundRepository.save(paymentRefund);
+
+            paymentOrchestrationDao.saveAuditRecord(Constants.REFUND_UPDATED,
+                    Constants.REFUND_CALLBACK_API_CALLBACK,
+                    null, null, null, paymentRefundUpdated.getRefundId(), null);
+        }
+
+        logger.debug("Ending refundCallback() method in ModifyPaymentServiceImpl");
+        return paymentRefundUpdated;
+    }
+
+}
+
+
