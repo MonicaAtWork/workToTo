@@ -1,0 +1,184 @@
+package com.sherwinwilliams.service.paymentorchestrationserice.rest;
+
+
+import com.sherwinwilliams.service.paymentorchestrationserice.dao.PaymentOrchestrationDao;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.CancelAmountRequested;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.PaymentRefundDetails;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.PaymentCaptureRequestResponse;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.PaymentVoidDetails;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.ProcessorResponse;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.RefundAmountRequested;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.VoidAmountRequested;
+import com.sherwinwilliams.service.paymentorchestrationserice.domain.service.ModifyPaymentService;
+import jakarta.validation.Valid;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/payments")
+public class ModifyPaymentServiceController {
+
+    @Autowired
+    ModifyPaymentService modifyPaymentService;
+    @Autowired
+    PaymentOrchestrationDao paymentOrchestrationDao;
+
+    Logger logger = LogManager.getLogger(ModifyPaymentServiceController.class);
+
+    /**
+     * This is a POST API to start a payment capture Web Applications. The response contains
+     * ProcessorResponse data.
+     *
+     * @param authorizationId Auth ID
+     * @param captureRequest  captureRequest
+     * @return ResponseEntity ProcessorResponse
+     */
+    @PostMapping(value = "/authorizations/{aid}/captures")
+    public ResponseEntity<ProcessorResponse> acceptCaptureRequest(
+            @PathVariable("aid") final String authorizationId,
+            @Valid @RequestBody final PaymentCaptureRequestResponse captureRequest,
+            @RequestParam(name = "systemName", defaultValue = "Samples", required = false) String systemName) {
+        logger.debug("Inside captureAuthorization controller method");
+        return ResponseEntity
+                .accepted()
+                .body(modifyPaymentService.captureRequest(UUID.fromString(authorizationId), captureRequest,
+                        systemName));
+
+    }
+
+    /**
+     * This API is used internally for the processing of a capture.
+     * The request was accepted by an outside system already but now
+     * the capture needs to be completed (with retries when it cannot connect)
+     *
+     * @param authorizationId Auth ID
+     * @param captureRequest  captureRequest
+     * @return ResponseEntity ProcessorResponse
+     */
+    @PutMapping(value = "/authorizations/{aid}/captures/{cid}/process")
+    public ResponseEntity<PaymentCaptureRequestResponse> processCaptureRequest(
+            @PathVariable("aid") final String authorizationId,
+            @PathVariable("cid") final String captureId,
+            @Valid @RequestBody final PaymentCaptureRequestResponse captureRequest,
+            @RequestParam(name = "systemName", defaultValue = "Samples", required = false) String systemName) {
+        logger.debug("Inside processCaptureRequest controller method");
+        return new ResponseEntity<>(
+                modifyPaymentService.processCaptureRequest(
+                        UUID.fromString(authorizationId), UUID.fromString(captureId), captureRequest, systemName),
+                HttpStatus.CREATED);
+    }
+
+    /**
+     * This is a POST API to void a payment Authorized Web Applications. The response contains
+     * ProcessorResponse data.
+     *
+     * @param authorizationId Auth ID
+     * @param voidRequest     voidRequest
+     * @return ResponseEntity ProcessorResponse
+     */
+    @PostMapping(value = "/authorizations/{aid}/voids")
+    public ResponseEntity<ProcessorResponse> voidAuthorization(
+            @PathVariable("aid") final String authorizationId,
+            @Valid @RequestBody final VoidAmountRequested voidRequest,
+            @RequestParam(name = "systemName", defaultValue = "Samples", required = false) String systemName) {
+        logger.debug("Inside voidAuthorization controller method");
+        return ResponseEntity.accepted().body(
+                modifyPaymentService.voidRequest(UUID.fromString(authorizationId), voidRequest, "Void", systemName));
+    }
+
+    /**
+     * This is a POST API to refund a payment Authorized Web Applications. The response contains
+     * ProcessorResponse data.
+     *
+     * @param authorizationId Auth ID
+     * @param captureId       Capture ID
+     * @param refundRequest   RefundAmountRequested
+     * @return ResponseEntity ProcessorResponse
+     */
+    @PostMapping(value = "/authorizations/{aid}/captures/{cid}/refunds")
+    public ResponseEntity<ProcessorResponse> refundAuthorization(
+            @PathVariable("aid") final String authorizationId,
+            @PathVariable("cid") final String captureId,
+            @Valid @RequestBody final RefundAmountRequested refundRequest,
+            @RequestParam(name = "systemName", defaultValue = "Samples", required = false) String systemName) {
+        logger.debug("Inside voidAuthorization controller method");
+        return ResponseEntity.accepted().body(
+                modifyPaymentService.refundRequest(UUID.fromString(authorizationId),
+                        UUID.fromString(captureId), refundRequest, systemName));
+    }
+
+    /**
+     * This is a POST API to cancel.
+     *
+     * @param authorizationId Auth ID
+     * @param cancelRequest   CancelAmountRequested
+     * @return ResponseEntity ProcessorResponse
+     */
+    @PostMapping(value = "/authorizations/{aid}/cancels")
+    public ResponseEntity<ProcessorResponse> cancel(
+            @PathVariable("aid") final String authorizationId,
+            @Valid @RequestBody final CancelAmountRequested cancelRequest,
+            @RequestParam(name = "systemName", defaultValue = "Samples", required = false) String systemName) {
+        logger.debug("Inside cancel controller method");
+        return ResponseEntity.accepted().body(
+                modifyPaymentService.cancelRequest(UUID.fromString(authorizationId), cancelRequest, systemName));
+    }
+
+    /**
+     * This API is used internally for the processing of a void.
+     * The request was accepted by an outside system already but now
+     * the void needs to be completed (with retries when it cannot connect)
+     *
+     * @param authorizationId Auth ID
+     * @param voidId          Void ID
+     * @param voidRequest     PaymentVoidDetails
+     * @return ResponseEntity PaymentVoidDetails
+     */
+    @PutMapping(value = "/authorizations/{aid}/voids/{vid}/process")
+    public ResponseEntity<PaymentVoidDetails> processVoidRequest(
+            @PathVariable("aid") final String authorizationId,
+            @PathVariable("vid") final String voidId,
+            @Valid @RequestBody final PaymentVoidDetails voidRequest,
+            @RequestParam(name = "systemName", defaultValue = "Samples", required = false) String systemName) {
+        logger.debug("Inside voidAuthorization controller method");
+        return new ResponseEntity<>(
+                modifyPaymentService.processVoidRequest(
+                        UUID.fromString(authorizationId), UUID.fromString(voidId), voidRequest, systemName),
+                HttpStatus.CREATED);
+    }
+
+    /**
+     * This API is used internally for the processing of a refund.
+     * The request was accepted by an outside system already but now
+     * the capture needs to be completed (with retries when it cannot connect)
+     *
+     * @param authorizationId Auth ID
+     * @param captureRequest captureRequest
+     * @return ResponseEntity ProcessorResponse
+     */
+    @PutMapping(value = "/authorizations/{aid}/refunds/{cid}/process")
+    public ResponseEntity<PaymentRefundDetails> processRefundRequest(
+            @PathVariable("aid") final String authorizationId,
+            @PathVariable("cid") final String captureId,
+            @Valid @RequestBody final PaymentRefundDetails captureRequest,
+            @RequestParam(name = "systemName",defaultValue = "Samples",required = false) String systemName) {
+        logger.debug("Inside processCaptureRequest controller method");
+        return new ResponseEntity<>(
+                modifyPaymentService.processRefundRequest(
+                        UUID.fromString(authorizationId), UUID.fromString(captureId), captureRequest, systemName),
+                HttpStatus.CREATED);
+    }
+
+}
