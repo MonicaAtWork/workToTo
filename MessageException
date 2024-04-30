@@ -1,0 +1,11 @@
+package com.sherwinwilliams.service.paymentorchestrationserice.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+
+@ResponseStatus(code = HttpStatus.NOT_FOUND, reason = "message not found")
+public class MessageException extends RuntimeException {
+
+    public static String MESSAGE_EXISTS = "Message must exist";
+
+}
