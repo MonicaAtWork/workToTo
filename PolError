@@ -1,0 +1,19 @@
+package com.sherwinwilliams.service.paymentorchestrationserice.exception;
+
+import com.sherwinwilliams.service.paymentorchestrationserice.enm.ErrorSource;
+
+import java.time.LocalDateTime;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+
+@Data
+@Builder
+@AllArgsConstructor
+public class PolError {
+    private LocalDateTime timestamp;
+    private int status;
+    private String message;
+    private ErrorSource source;
+}
